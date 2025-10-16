@@ -9,6 +9,16 @@ The tool is written in Python 3 and runs on Windows, Linux and MacOS.
 
 ## Features
 
+### Presenter View
+Below is the presenter view displaying the current slide, the next slide, time, and the duration of the presentation so far.
+
+![Presenter View](screenshots/presenter_view.png)
+
+### Presentation View
+Here is the audience view showing the full slide with a laser pointer marker highlighting a specific area.
+
+![Presentation View](screenshots/presentation_view.png)
+
 ### Dual Screen Support
 - **Presenter View**: Full-featured control interface on your primary screen
 - **Audience View**: Clean, fullscreen presentation on secondary display
@@ -41,18 +51,6 @@ The tool is written in Python 3 and runs on Windows, Linux and MacOS.
 - **Session Persistence**: Remembers last opened file and slide position
 - **Slide Caching**: Fast slide rendering with intelligent caching
 - **Keyboard Shortcuts**: Full keyboard control even when presentation window has focus
-
-## Screenshots
-
-### Presenter View
-Below is the presenter view displaying the current slide, the next slide, time, and the duration of the presentation so far.
-
-![Presenter View](screenshots/presenter_view.png)
-
-### Presentation View
-Here is the audience view showing the full slide with a laser pointer marker highlighting a specific area.
-
-![Presentation View](screenshots/presentation_view.png)
 
 ## Installation
 
