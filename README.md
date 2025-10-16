@@ -2,8 +2,8 @@
 
 A professional dual-screen presentation tool for displaying PDF slides with a dedicated presenter view.
 
-It always annoyed me that I don't have a convenient presentation tool fopr my PDF slides made with LateX Beamer. This tool uses mostly the same key bindings as power point and should be very intuitive to use, especially if you have used powerpoint before. 
-My main intention was to improve the quality of my presentations and my teaching of the Circuits Engineeing course at University of Klagenfurt.
+It always annoyed me that I don't have a convenient presentation tool for my PDF slides made with LaTeX Beamer. This tool primarily uses the same key bindings as PowerPoint and should be very intuitive to use, especially if you have experience with PowerPoint. 
+My primary intention was to enhance the quality of my presentations and teaching in the Circuits Engineering course at the University of Klagenfurt.
 
 The tool is written in Python 3 and runs on Windows, Linux and MacOS.
 
