@@ -1,10 +1,10 @@
-#!/usr/bin/env python3
+ #!/usr/bin/env python3
 """
 PDF Show and Tell - Dual Screen Presentation Tool
 A professional presentation tool for displaying PDF slides with presenter view
 
 Wilfried Elmenreich
-Version 0.1, October 2025
+Version 0.2, October 2025
 Released under the WTFPL (Do What The Fuck You Want To Public License)
 """
 
@@ -14,6 +14,7 @@ import os
 from datetime import datetime, timedelta
 from pathlib import Path
 import configparser
+import re
 
 # Check for required dependencies
 try:
@@ -27,7 +28,6 @@ except ImportError:
     print(f"  {commands}\n")
     print("="*60)
     
-    # Try to copy to clipboard
     try:
         import pyperclip
         pyperclip.copy(commands)
@@ -52,7 +52,6 @@ except ImportError:
     print(f"  {commands}\n")
     print("="*60)
     
-    # Try to copy to clipboard
     try:
         import pyperclip
         pyperclip.copy(commands)
@@ -73,7 +72,6 @@ except ImportError:
     print(f"  {commands}\n")
     print("="*60)
     
-    # Try to copy to clipboard
     try:
         import pyperclip
         pyperclip.copy(commands)
@@ -110,30 +108,41 @@ class Config:
 
 class SlideCache:
     """Cache rendered slides for performance"""
-    def __init__(self, pdf_path, dpi=150):
+    def __init__(self, pdf_path, dpi=150, fullscreen_dpi=300):
         self.doc = fitz.open(pdf_path)
         self.dpi = dpi
+        self.fullscreen_dpi = fullscreen_dpi
         self.cache = {}
+        self.fullscreen_cache = {}
         self.total_slides = len(self.doc)
     
-    def get_slide(self, page_num):
-        """Get slide as QPixmap, cache if not already cached"""
-        if page_num not in self.cache:
+    def get_slide(self, page_num, high_res=False):
+        """Get slide as QPixmap, cache if not already cached
+        
+        Args:
+            page_num: Page number to retrieve
+            high_res: If True, use higher DPI for fullscreen display
+        """
+        target_dpi = self.fullscreen_dpi if high_res else self.dpi
+        cache = self.fullscreen_cache if high_res else self.cache
+        
+        if page_num not in cache:
             page = self.doc[page_num]
-            mat = fitz.Matrix(self.dpi / 72, self.dpi / 72)
+            mat = fitz.Matrix(target_dpi / 72, target_dpi / 72)
             pix = page.get_pixmap(matrix=mat)
             
             # Convert to QImage
             img_data = pix.samples
             qimg = QImage(img_data, pix.width, pix.height, 
                          pix.stride, QImage.Format.Format_RGB888)
-            self.cache[page_num] = QPixmap.fromImage(qimg)
+            cache[page_num] = QPixmap.fromImage(qimg)
         
-        return self.cache[page_num]
+        return cache[page_num]
     
     def close(self):
         self.doc.close()
         self.cache.clear()
+        self.fullscreen_cache.clear()
 
 
 class NotesLoader:
@@ -144,27 +153,55 @@ class NotesLoader:
             self._parse_notes(notes_path)
     
     def _parse_notes(self, notes_path):
-        with open(notes_path, 'r', encoding='utf-8') as f:
-            content = f.read()
+        # List of encodings to try, from most common to less common
+        encodings_to_try = [
+            'utf-8',      # Most common modern encoding
+            'latin-1',    # Windows Western European 
+            'cp1252',     # Windows default for Western European languages
+            'iso-8859-1'  # Another Western European encoding
+        ]
         
-        # Split by slide markers
-        parts = content.split('---')
+        content = None
+        for encoding in encodings_to_try:
+            try:
+                with open(notes_path, 'r', encoding=encoding) as f:
+                    content = f.read()
+                    print(f"Successfully read note file with {encoding} encoding")
+                    break
+            except UnicodeDecodeError:
+                continue
+        
+        # If no encoding worked, use replacement strategy
+        if content is None:
+            try:
+                with open(notes_path, 'r', encoding='utf-8', errors='replace') as f:
+                    content = f.read()
+                    print("Fell back to replacement strategy")
+            except Exception as e:
+                print(f"Could not read file {notes_path}: {e}")
+                return
+        
+        # Split by both --- and --N-- markers while capturing them
+        parts = re.split(r'(---|--\d+--)', content)
+        
         current_slide = 0
         
         for part in parts:
-            part = part.strip()
-            if not part:
+            part_stripped = part.strip()
+            
+            if not part_stripped:
                 continue
             
-            # Check for explicit slide number marker --12--
-            import re
-            match = re.match(r'^--(\d+)--\s*', part)
-            if match:
+            # Check if it's a separator marker (---)
+            if part_stripped == '---':
+                current_slide += 1
+            # Check if it's a numbered marker (--N--)
+            elif re.match(r'^--(\d+)--$', part_stripped):
+                match = re.match(r'^--(\d+)--$', part_stripped)
                 current_slide = int(match.group(1)) - 1  # 0-indexed
-                part = part[match.end():].strip()
-            
-            self.notes[current_slide] = part
-            current_slide += 1
+            else:
+                # It's text content - assign to current_slide
+                self.notes[current_slide] = part_stripped
     
     def get_notes(self, slide_num):
         return self.notes.get(slide_num, "")
@@ -178,13 +215,11 @@ class FullScreenWindow(QMainWindow):
         self.setWindowFlags(Qt.WindowType.FramelessWindowHint | Qt.WindowType.WindowStaysOnTopHint)
         self.setStyleSheet("background-color: black;")
         
-        # Central widget
         central = QWidget()
         self.setCentralWidget(central)
         layout = QVBoxLayout(central)
         layout.setContentsMargins(0, 0, 0, 0)
         
-        # Slide display
         self.slide_label = QLabel()
         self.slide_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.slide_label.setStyleSheet("background-color: black;")
@@ -192,7 +227,7 @@ class FullScreenWindow(QMainWindow):
         
         self.is_blanked = False
         self.current_pixmap = None
-        self.pointer_pos = None  # Position for laser pointer
+        self.pointer_pos = None
     
     def show_slide(self, pixmap):
         """Display a slide"""
@@ -200,7 +235,6 @@ class FullScreenWindow(QMainWindow):
         if self.is_blanked:
             self.slide_label.clear()
             return
-        
         self._update_display()
     
     def _update_display(self):
@@ -208,22 +242,16 @@ class FullScreenWindow(QMainWindow):
         if not self.current_pixmap or self.is_blanked:
             return
         
-        # Scale to fit screen while maintaining aspect ratio
         scaled = self.current_pixmap.scaled(self.size(), Qt.AspectRatioMode.KeepAspectRatio, 
                                            Qt.TransformationMode.SmoothTransformation)
         
-        # If pointer is active, draw it on the pixmap
         if self.pointer_pos:
-            # Create a copy to draw on
             display_pixmap = QPixmap(scaled.size())
             display_pixmap.fill(Qt.GlobalColor.black)
             
             painter = QPainter(display_pixmap)
             painter.drawPixmap(0, 0, scaled)
-            
-            # Draw laser pointer effect
             self._draw_laser_pointer(painter, self.pointer_pos)
-            
             painter.end()
             self.slide_label.setPixmap(display_pixmap)
         else:
@@ -233,19 +261,16 @@ class FullScreenWindow(QMainWindow):
         """Draw a laser pointer at the given position"""
         painter.setRenderHint(QPainter.RenderHint.Antialiasing)
         
-        # Create radial gradient for glow effect
         gradient = QRadialGradient(QPointF(pos.x(), pos.y()), 30)
         gradient.setColorAt(0, QColor(255, 0, 0, 200))
         gradient.setColorAt(0.3, QColor(255, 50, 0, 150))
         gradient.setColorAt(0.6, QColor(255, 100, 0, 80))
         gradient.setColorAt(1, QColor(255, 150, 0, 0))
         
-        # Draw outer glow (sun rays effect)
         painter.setBrush(gradient)
         painter.setPen(Qt.PenStyle.NoPen)
         painter.drawEllipse(QPointF(pos.x(), pos.y()), 30, 30)
         
-        # Draw bright center dot
         center_gradient = QRadialGradient(QPointF(pos.x(), pos.y()), 15)
         center_gradient.setColorAt(0, QColor(255, 255, 255, 255))
         center_gradient.setColorAt(0.5, QColor(255, 0, 0, 255))
@@ -272,7 +297,6 @@ class FullScreenWindow(QMainWindow):
     def keyPressEvent(self, event):
         """Forward key events to presenter window"""
         if self.presenter_window:
-            # Forward the event to the presenter window
             if event.key() == Qt.Key.Key_Right or event.key() == Qt.Key.Key_Space:
                 self.presenter_window.next_slide()
             elif event.key() == Qt.Key.Key_Left:
@@ -297,11 +321,14 @@ class PresenterWindow(QMainWindow):
         self.notes_loader = None
         self.fullscreen_window = None
         self.current_slide = 0
+        self.preview_slide = 1
+        self.last_preview_before_updown = None
+        self.last_preview_used = False
+        self.remembered_preview = None
         self.is_presenting = False
         self.is_blanked = False
         self.start_time = None
         
-        # Timer for clock
         self.timer = QTimer()
         self.timer.timeout.connect(self.update_time)
         self.timer.start(1000)
@@ -309,7 +336,6 @@ class PresenterWindow(QMainWindow):
         self._init_ui()
         self._load_last_session()
         
-        # Move to primary screen after initialization
         QTimer.singleShot(100, self._move_to_primary_screen)
     
     def _move_to_primary_screen(self):
@@ -318,7 +344,6 @@ class PresenterWindow(QMainWindow):
         if screens:
             primary_screen = screens[0]
             geometry = primary_screen.availableGeometry()
-            # Center the window on primary screen
             self.move(geometry.center() - self.rect().center())
     
     def _init_ui(self):
@@ -327,7 +352,6 @@ class PresenterWindow(QMainWindow):
         self.setCentralWidget(central)
         main_layout = QVBoxLayout(central)
         
-        # Top control bar with file name and time/duration
         top_layout = QHBoxLayout()
         
         self.file_label = QLabel("No PDF loaded")
@@ -336,7 +360,6 @@ class PresenterWindow(QMainWindow):
         
         top_layout.addStretch()
         
-        # Time and duration with larger font
         time_frame = QFrame()
         time_layout = QHBoxLayout(time_frame)
         time_layout.setContentsMargins(10, 5, 10, 5)
@@ -355,7 +378,6 @@ class PresenterWindow(QMainWindow):
         
         main_layout.addLayout(top_layout)
         
-        # File control bar
         control_layout = QHBoxLayout()
         
         self.open_btn = QPushButton("Open PDF")
@@ -370,7 +392,6 @@ class PresenterWindow(QMainWindow):
         
         main_layout.addLayout(control_layout)
         
-        # Presentation controls
         pres_control_layout = QHBoxLayout()
         
         self.start_btn = QPushButton("Start from Beginning [F5]")
@@ -397,10 +418,8 @@ class PresenterWindow(QMainWindow):
         
         main_layout.addLayout(pres_control_layout)
         
-        # Slide display area
         slides_layout = QHBoxLayout()
         
-        # Current slide (left, larger)
         current_frame = QFrame()
         current_frame.setFrameStyle(QFrame.Shape.Box)
         current_layout = QVBoxLayout(current_frame)
@@ -415,14 +434,12 @@ class PresenterWindow(QMainWindow):
         self.current_slide_label.setMouseTracking(True)
         self.current_slide_label.mouseMoveEvent = self._handle_mouse_move
         
-        # Install event filter to track mouse leaving
         self.current_slide_label.installEventFilter(self)
         
         current_layout.addWidget(self.current_slide_label)
         
         slides_layout.addWidget(current_frame, 2)
         
-        # Next slide (right, smaller)
         next_frame = QFrame()
         next_frame.setFrameStyle(QFrame.Shape.Box)
         next_layout = QVBoxLayout(next_frame)
@@ -441,7 +458,6 @@ class PresenterWindow(QMainWindow):
         
         main_layout.addLayout(slides_layout, 2)
         
-        # Navigation controls
         nav_layout = QHBoxLayout()
         
         self.prev_btn = QPushButton("Previous [←]")
@@ -460,7 +476,6 @@ class PresenterWindow(QMainWindow):
         
         main_layout.addLayout(nav_layout)
         
-        # Notes area (below)
         notes_frame = QFrame()
         notes_frame.setFrameStyle(QFrame.Shape.Box)
         notes_layout = QVBoxLayout(notes_frame)
@@ -476,7 +491,6 @@ class PresenterWindow(QMainWindow):
         
         main_layout.addWidget(notes_frame)
         
-        # Keyboard shortcuts
         self._setup_shortcuts()
     
     def eventFilter(self, obj, event):
@@ -491,36 +505,28 @@ class PresenterWindow(QMainWindow):
         if not self.is_presenting or not self.fullscreen_window:
             return
         
-        # Get mouse position relative to the label
         pos = event.pos()
         
-        # Get the pixmap and its position within the label
         pixmap = self.current_slide_label.pixmap()
         if not pixmap:
             return
         
-        # Calculate the actual position of the scaled pixmap within the label
         label_size = self.current_slide_label.size()
         pixmap_size = pixmap.size()
         
-        # Calculate offsets (centering)
         x_offset = (label_size.width() - pixmap_size.width()) / 2
         y_offset = (label_size.height() - pixmap_size.height()) / 2
         
-        # Check if mouse is within the pixmap area
         if (pos.x() < x_offset or pos.x() > x_offset + pixmap_size.width() or
             pos.y() < y_offset or pos.y() > y_offset + pixmap_size.height()):
             self.fullscreen_window.set_pointer_position(None)
             return
         
-        # Calculate relative position within the pixmap (0-1 range)
         rel_x = (pos.x() - x_offset) / pixmap_size.width()
         rel_y = (pos.y() - y_offset) / pixmap_size.height()
         
-        # Get the fullscreen window's slide label size
         fullscreen_pixmap = self.fullscreen_window.slide_label.pixmap()
         if fullscreen_pixmap:
-            # Calculate position on fullscreen display
             fs_x = rel_x * fullscreen_pixmap.width()
             fs_y = rel_y * fullscreen_pixmap.height()
             
@@ -528,28 +534,47 @@ class PresenterWindow(QMainWindow):
     
     def _setup_shortcuts(self):
         """Setup keyboard shortcuts"""
-        # Navigation
         QShortcut(QKeySequence(Qt.Key.Key_Right), self, self.next_slide)
         QShortcut(QKeySequence(Qt.Key.Key_Left), self, self.prev_slide)
         QShortcut(QKeySequence(Qt.Key.Key_Space), self, self.next_slide)
+        QShortcut(QKeySequence(Qt.Key.Key_Up), self, self.preview_prev)
+        QShortcut(QKeySequence(Qt.Key.Key_Down), self, self.preview_next)
         
-        # Presentation control
         QShortcut(QKeySequence(Qt.Key.Key_F5), self, self.start_from_beginning)
         QShortcut(QKeySequence(Qt.Modifier.SHIFT | Qt.Key.Key_F5), self, self.start_from_current)
         QShortcut(QKeySequence(Qt.Key.Key_Escape), self, self.stop_presenting)
         QShortcut(QKeySequence(Qt.Key.Key_B), self, self.toggle_blank)
+        
+        QShortcut(QKeySequence(Qt.Key.Key_0), self, self.preview_restore_last)
+        QShortcut(QKeySequence(Qt.Key.Key_1), self, self.preview_set_next)
+        QShortcut(QKeySequence(Qt.Key.Key_9), self, self.preview_set_prev)
+        QShortcut(QKeySequence(Qt.Key.Key_R), self, self.preview_remember)
+        QShortcut(QKeySequence(Qt.Key.Key_G), self, self.preview_goto_remembered)
     
     def keyPressEvent(self, event):
         """Handle key press events"""
-        # Navigation keys
         if event.key() == Qt.Key.Key_Right or event.key() == Qt.Key.Key_Space:
             self.next_slide()
         elif event.key() == Qt.Key.Key_Left:
             self.prev_slide()
+        elif event.key() == Qt.Key.Key_Up:
+            self.preview_prev()
+        elif event.key() == Qt.Key.Key_Down:
+            self.preview_next()
         elif event.key() == Qt.Key.Key_Escape:
             self.stop_presenting()
         elif event.key() == Qt.Key.Key_B:
             self.toggle_blank()
+        elif event.key() == Qt.Key.Key_0:
+            self.preview_restore_last()
+        elif event.key() == Qt.Key.Key_1:
+            self.preview_set_next()
+        elif event.key() == Qt.Key.Key_9:
+            self.preview_set_prev()
+        elif event.key() == Qt.Key.Key_R:
+            self.preview_remember()
+        elif event.key() == Qt.Key.Key_G:
+            self.preview_goto_remembered()
         elif event.key() == Qt.Key.Key_F5:
             if event.modifiers() & Qt.KeyboardModifier.ShiftModifier:
                 self.start_from_current()
@@ -567,23 +592,24 @@ class PresenterWindow(QMainWindow):
         )
         
         if filename:
-            self._load_pdf(filename)
+            self._load_pdf(filename, restore_slide=False)
     
-    def _load_pdf(self, pdf_path):
-        """Load PDF and initialize cache"""
+    def _load_pdf(self, pdf_path, restore_slide=False):
+        """Load PDF and initialize cache
+        
+        Args:
+            pdf_path: Path to the PDF file
+            restore_slide: If True, restore the last slide position from config
+        """
         try:
-            # Close existing cache
             if self.slide_cache:
                 self.slide_cache.close()
             
-            # Load new PDF
             self.slide_cache = SlideCache(pdf_path)
             
-            # Save directory
             self.config.set('Session', 'last_directory', str(Path(pdf_path).parent))
             self.config.set('Session', 'last_file', pdf_path)
             
-            # Try to load notes automatically
             notes_path = Path(pdf_path).with_name(
                 Path(pdf_path).stem + '_notes.txt'
             )
@@ -592,18 +618,37 @@ class PresenterWindow(QMainWindow):
             else:
                 self.notes_loader = NotesLoader(None)
             
-            # Reset to first slide
-            last_slide = int(self.config.get('Session', 'last_slide', fallback='0'))
-            self.current_slide = min(last_slide, self.slide_cache.total_slides - 1)
+            # Restore last slide position if this is an auto-load
+            if restore_slide:
+                last_slide = int(self.config.get('Session', 'last_slide', fallback='0'))
+                # Ensure the slide number is valid
+                if 0 <= last_slide < self.slide_cache.total_slides:
+                    self.current_slide = last_slide
+                else:
+                    self.current_slide = 0
+            else:
+                # Manual load - start from beginning
+                self.current_slide = 0
             
-            # Update UI
+            self.preview_slide = self.current_slide + 1
+            if self.preview_slide >= self.slide_cache.total_slides:
+                self.preview_slide = self.slide_cache.total_slides - 1
+            
+            self.last_preview_before_updown = None
+            self.last_preview_used = False            
+            self.remembered_preview = None
+            
             self.file_label.setText(Path(pdf_path).name)
             self.start_btn.setEnabled(True)
             self.start_current_btn.setEnabled(True)
             self.prev_btn.setEnabled(True)
             self.next_btn.setEnabled(True)
             
-            self.update_slides()
+            # Delay the update_slides call to ensure window geometry is ready
+            if restore_slide:
+                QTimer.singleShot(200, self.update_slides)
+            else:
+                self.update_slides()
             
         except Exception as e:
             QMessageBox.critical(self, "Error", f"Failed to load PDF: {str(e)}")
@@ -629,7 +674,6 @@ class PresenterWindow(QMainWindow):
         if not self.slide_cache:
             return
         
-        # Current slide
         current_pixmap = self.slide_cache.get_slide(self.current_slide)
         scaled_current = current_pixmap.scaled(
             self.current_slide_label.size(), 
@@ -638,9 +682,8 @@ class PresenterWindow(QMainWindow):
         )
         self.current_slide_label.setPixmap(scaled_current)
         
-        # Next slide
-        if self.current_slide < self.slide_cache.total_slides - 1:
-            next_pixmap = self.slide_cache.get_slide(self.current_slide + 1)
+        if self.preview_slide < self.slide_cache.total_slides:
+            next_pixmap = self.slide_cache.get_slide(self.preview_slide)
             scaled_next = next_pixmap.scaled(
                 self.next_slide_label.size(),
                 Qt.AspectRatioMode.KeepAspectRatio,
@@ -651,37 +694,93 @@ class PresenterWindow(QMainWindow):
             self.next_slide_label.clear()
             self.next_slide_label.setText("End of presentation")
         
-        # Update slide info
         self.slide_info_label.setText(
-            f"Slide {self.current_slide + 1} / {self.slide_cache.total_slides}"
+            f"Slide {self.current_slide + 1} / {self.slide_cache.total_slides} (Preview: {self.preview_slide + 1})"
         )
         
-        # Update notes
         if self.notes_loader:
             notes = self.notes_loader.get_notes(self.current_slide)
             self.notes_text.setPlainText(notes)
         else:
             self.notes_text.setPlainText("")
         
-        # Update fullscreen if presenting
         if self.is_presenting and self.fullscreen_window:
-            slide_pixmap = self.slide_cache.get_slide(self.current_slide)
+            slide_pixmap = self.slide_cache.get_slide(self.current_slide, high_res=True)
             self.fullscreen_window.show_slide(slide_pixmap)
         
-        # Save current position
         self.config.set('Session', 'last_slide', str(self.current_slide))
         self.config.save()
     
     def next_slide(self):
         """Go to next slide"""
-        if self.slide_cache and self.current_slide < self.slide_cache.total_slides - 1:
-            self.current_slide += 1
+        if self.slide_cache and self.preview_slide < self.slide_cache.total_slides:
+            if self.preview_slide != self.current_slide + 1 and self.last_preview_before_updown is None:
+                self.last_preview_before_updown = self.current_slide
+            if self.last_preview_used == True and self.last_preview_before_updown == self.preview_slide:
+                self.last_preview_used = False
+                self.last_preview_before_updown = None
+            
+            self.current_slide = self.preview_slide
+            
+            self.preview_slide = self.current_slide + 1
+            if self.preview_slide >= self.slide_cache.total_slides:
+                self.preview_slide = self.slide_cache.total_slides - 1
+            
             self.update_slides()
     
     def prev_slide(self):
         """Go to previous slide"""
         if self.slide_cache and self.current_slide > 0:
             self.current_slide -= 1
+            self.preview_slide = self.current_slide + 1
+            if self.preview_slide >= self.slide_cache.total_slides:
+                self.preview_slide = self.slide_cache.total_slides - 1
+            self.update_slides()
+    
+    def preview_next(self):
+        """Navigate preview to next slide"""
+        if self.slide_cache and self.preview_slide < self.slide_cache.total_slides - 1:
+            self.preview_slide += 1
+            self.update_slides()
+    
+    def preview_prev(self):
+        """Navigate preview to previous slide"""
+        if self.slide_cache and self.preview_slide > 0:
+            self.preview_slide -= 1
+            self.update_slides()
+    
+    def preview_restore_last(self):
+        """Restore preview to last position before up/down navigation (key 0)"""
+        if self.slide_cache and self.last_preview_before_updown is not None:
+            self.preview_slide = self.last_preview_before_updown
+            self.last_preview_used = True
+            self.update_slides()
+    
+    def preview_set_next(self):
+        """Set preview to current slide + 1 (key 1)"""
+        if self.slide_cache:
+            self.preview_slide = self.current_slide + 1
+            if self.preview_slide >= self.slide_cache.total_slides:
+                self.preview_slide = self.slide_cache.total_slides - 1
+            self.update_slides()
+    
+    def preview_set_prev(self):
+        """Set preview to current slide - 1 (key 9)"""
+        if self.slide_cache:
+            self.preview_slide = self.current_slide - 1
+            if self.preview_slide < 0:
+                self.preview_slide = 0
+            self.update_slides()
+    
+    def preview_remember(self):
+        """Remember current preview slide (key r)"""
+        if self.slide_cache:
+            self.remembered_preview = self.preview_slide
+    
+    def preview_goto_remembered(self):
+        """Go to remembered preview slide (key g)"""
+        if self.slide_cache and self.remembered_preview is not None:
+            self.preview_slide = self.remembered_preview
             self.update_slides()
     
     def start_from_beginning(self):
@@ -689,6 +788,7 @@ class PresenterWindow(QMainWindow):
         if not self.slide_cache:
             return
         self.current_slide = 0
+        self.preview_slide = 1
         self.update_slides()
         self._start_presentation()
     
@@ -700,14 +800,12 @@ class PresenterWindow(QMainWindow):
     
     def _start_presentation(self):
         """Initialize and show fullscreen window"""
-        # Move presenter window to primary screen first
         screens = QApplication.screens()
         if screens:
             primary_screen = screens[0]
             geometry = primary_screen.availableGeometry()
             self.move(geometry.center() - self.rect().center())
         
-        # Find secondary monitor for presentation
         if len(screens) < 2:
             QMessageBox.warning(
                 self, "Warning", 
@@ -717,31 +815,25 @@ class PresenterWindow(QMainWindow):
         else:
             target_screen = screens[1]
         
-        # Create fullscreen window
         if not self.fullscreen_window:
             self.fullscreen_window = FullScreenWindow(self)
         
-        # Position on target screen
         geometry = target_screen.geometry()
         self.fullscreen_window.setGeometry(geometry)
         self.fullscreen_window.showFullScreen()
         
-        # Show current slide
-        slide_pixmap = self.slide_cache.get_slide(self.current_slide)
+        slide_pixmap = self.slide_cache.get_slide(self.current_slide, high_res=True)
         self.fullscreen_window.show_slide(slide_pixmap)
         
-        # Update state
         self.is_presenting = True
         self.is_blanked = False
         self.start_time = datetime.now()
         
-        # Update UI
         self.stop_btn.setEnabled(True)
         self.blank_btn.setEnabled(True)
         self.start_btn.setEnabled(False)
         self.start_current_btn.setEnabled(False)
         
-        # Keep focus on presenter window
         self.activateWindow()
         self.raise_()
     
@@ -754,7 +846,6 @@ class PresenterWindow(QMainWindow):
         self.is_blanked = False
         self.start_time = None
         
-        # Update UI
         self.stop_btn.setEnabled(False)
         self.blank_btn.setEnabled(False)
         self.start_btn.setEnabled(True)
@@ -772,16 +863,14 @@ class PresenterWindow(QMainWindow):
             self.fullscreen_window.blank()
         else:
             self.fullscreen_window.unblank()
-            slide_pixmap = self.slide_cache.get_slide(self.current_slide)
+            slide_pixmap = self.slide_cache.get_slide(self.current_slide, high_res=True)
             self.fullscreen_window.show_slide(slide_pixmap)
     
     def update_time(self):
         """Update time display"""
-        # Current time
         current_time = datetime.now().strftime("%H:%M:%S")
         self.time_label.setText(f"Time: {current_time}")
         
-        # Duration
         if self.start_time:
             duration = datetime.now() - self.start_time
             minutes = int(duration.total_seconds() // 60)
@@ -792,7 +881,8 @@ class PresenterWindow(QMainWindow):
         """Load last session from config"""
         last_file = self.config.get('Session', 'last_file', fallback=None)
         if last_file and Path(last_file).exists():
-            self._load_pdf(last_file)
+            # Pass restore_slide=True for automatic session restore
+            self._load_pdf(last_file, restore_slide=True)
     
     def closeEvent(self, event):
         """Handle window close"""
@@ -815,4 +905,3 @@ def main():
 
 if __name__ == '__main__':
     main()
-            
