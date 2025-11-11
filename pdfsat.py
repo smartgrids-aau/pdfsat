@@ -3,8 +3,16 @@
 PDF Show and Tell - Dual Screen Presentation Tool
 A professional presentation tool for displaying PDF slides with presenter view
 
+Features:
+- Command line support: pdfsat pdffile.pdf [notesfile.txt]
+- Drag and drop support for PDF and TXT files
+- Dual screen presentation with presenter view
+- Speaker notes with custom formatting
+- Laser pointer overlay
+- Screen blanking
+
 Wilfried Elmenreich
-Version 0.2, October 2025
+Version 0.3, November 2025
 Released under the WTFPL (Do What The Fuck You Want To Public License)
 """
 
@@ -15,6 +23,11 @@ from datetime import datetime, timedelta
 from pathlib import Path
 import configparser
 import re
+import base64
+import io
+import ctypes
+import tempfile
+import argparse
 
 # Check for required dependencies
 try:
@@ -42,7 +55,7 @@ try:
                                   QHBoxLayout, QLabel, QPushButton, QFileDialog,
                                   QTextEdit, QFrame, QMessageBox)
     from PyQt6.QtCore import Qt, QTimer, QSize, QPoint, pyqtSignal, QPointF
-    from PyQt6.QtGui import QPixmap, QImage, QKeySequence, QShortcut, QScreen, QPainter, QColor, QPen, QRadialGradient, QMouseEvent
+    from PyQt6.QtGui import QPixmap, QImage, QKeySequence, QShortcut, QScreen, QPainter, QColor, QPen, QRadialGradient, QMouseEvent, QIcon
 except ImportError:
     print("\n" + "="*60)
     print("ERROR: PyQt6 is not installed.")
@@ -80,6 +93,48 @@ except ImportError:
         pass
     
     sys.exit(1)
+    
+icon_base64 = "AAABAAMAEBAAAAAAIACQAgAANgAAABgYAAAAACAA+AMAAMYCAAAgIAAAAAAgAPwAAAC+BgAAiVBORw0KGgoAAAANSUhEUgAAABAAAAAQCAIAAACQkWg2AAACV0lEQVR4nH2STU9TURCGZ849p/e0t7UUpNFipC4wiEblo2ATKkYXxrhgJfEHaICf4MKt/gQT90RJ2EJiSIw1Rt0ICxJhgW2qRlNFKKW39/Z+zLhoAVe+y3ln8maeGVxdXfU8DwEA4X9iYACllFxYWFhaWjIMww/CIxeFAAAmOqooaYRhOD09LZm5YdsGgBTA3LEDYgCQohOKCC2CEICZ5fzc7O9aHT9/fHT3+q8DWxqCfD+TvwkAPz68FkoFIaUT1tPlt3wxPz83K7XWUikUkNDKDXTQqA3ee9h94Qoips/0by0+jyW6ElpJAayU1loSETMDQ0AcMnstN9qX/bn2PvS81MClIAwQMGi3MBOROF4UAAAiVqK8sohC9Axe3i9tku+FbhPomIf8F53fbJhWHA3j9MQNneqtlbbO3Zlx9vfkznc+BCIPOSAT9QwNd2fPn8oVQs8rLb+MpTMyGotl+nkbyfcNxM4AGoZT2x24P7sXsL/3p7rxafPFMwAwT3SZqZP27k5PRIiI2Q6R7Ssmk0ksbUST6fDbdv3LZl8mg1IhBaFbj8WjmVSXFZF2O4EB2G+9K1cfPH5SOzhQpskorHgcGOymLaUiokTUfLP1NTcwBoDStpuF/DWtdTMgE9H3/XS6t1gsAsDUrdvValVKWQcoDOVzI1ftZlO6rjsyOjpZmDQQiVhH9fraevHVCgBMjY8Njwy7jisEhsyO4zqOIxHRcRzHcQCAiCzLKlcqufEJAChXKmezWdu2hRBtkkII7Lw3dv6MiOLxuGmaANBqtRqNRrv7SH8BIVsdsBkYkMQAAAAASUVORK5CYIKJUE5HDQoaCgAAAA1JSERSAAAAGAAAABgIAgAAAG8Vqq8AAAO/SURBVHicnZVLaJxVFMfPOfd+88pkOjPJmC+j0WaSIM2jVCxWiwqGWLBiJYpuzKrqQhdZpSK4K5idC1+48BEsRRCLom4G1LEIsVDEKqSppc3DdNrMo1PD5JtvJnPvd4+LSdtJaoLt3d3H+d17/+eF09PTkUiEmRERbn80DMvlssxms+l0moiMMXcAahiOjIzIbDY7NTV1B4jm0dfXR40fWVKikLdrj0JaUgIAIkrbtl8+fPib775nZ+WFfUNuXREiAyMgMwOwdisAIEMtAIjXtwxzyGd99ftfGI6OPvuMbdvStu0jExMnfz1FuvLmk3uLq1VJCAAMTEJ6a7U9r70FAH989LbwB4ynERAAtOFEa/Dn2TnT3v7GkYn5hb9JKZUvFLTWmjlXdouOW3DcoltbvlqqxZNDk8eclpjTEhuaPFaLJ5evlopureC4RcfNlV3NrLXO5QtKKYmIUkpERABLkCQShEjERJLQHwye/vAoAD42+YkklESSiAEQ2BKEAIhoSYmItLWUjEQAIHwBFMJoBczbCL+lp5CErlZX5s6F7Lt9LRGSlvAHEAlJNJzwf0Fk+cuLF354ffSpz9LBto6zn7+7emnBqLqqrCIJviUNNoGYhAQ29fKKP9Ye639g78Rki90FCB0PPprY/ZDRdQC89Et6ZWluOxCSqP6zHIq1dT78RLRnV2tXKn7/7kr+cn11JdiWKPx5ulrKs+d1H3jOKeVzJz5ulrgJhOit1XYeGI10dumqq6tuafZMafbMlVM/VXKX2VM9h8bCnfcCwNnjH5SvLCWTSWbzHyBEUm5lz4uvCqJvn9/39Bcnzdpa+pWDka5UIJ5AgMX0CaMVA/gjMf+OOG9M8psgZgbLtzT9Y/SenY+/c/y394+WFy+E7+vVWoOnAUC0RgUiABjP85Ty/BbfCkJEi7DzrsTy158WwSCRz/IndrQCorEIAIiaI87yDLe3hnxC1K+7T0IjJLQ6f805+N6XyjQqHLNhAGbmYDAIANVqtbnyMYPPEuevOd1RxYAAIBFRaz3Q3x8IBGra46bwZcNENHvxIgB09/Z6xiDdZNURd3WInlRKa42ImMlkXNcNh8NSStpwJyNiKpUaHh4GgEwmMz8/v6kiG2atdaVSQcT1suQ4TvNbjDGhUGhmZualsbGFhQUAeGT//vHx8cHBQdd1m/VCxMZ0XeyNWgIiCiGklMaYgYEBAHAcR0ophBBCbDq8bpLJZDYJeeNrlmWFw+FGUyAix3GUUls1m62zH1EpVSqVbqwQ0TYt618cSruH/B5igQAAAABJRU5ErkJggolQTkcNChoKAAAADUlIRFIAAAAgAAAAIAgCAAAA/BjtowAAAMNJREFUeJzVlTEOgzAMRT8VR6NLtnKMch56DLp5gcGnyswQqbIaNdiBUPInGPwf3zhxw8woqVtRdwAomoCIiieoH9Aws/cegHMOwPx87HS8v94AiCi82hJ049SNk6mk1Vt/PS9Drym0JViGXumbCchQ/QDtTw6tt46QARDDDgbEY6pEbgN+tUWaJk5GCiDLYgsJNidIW2+aSv11TE13jg2w01Tq9BaFdXGgTlyZGoW1+lmHGl0mQfh2KWWOyyTIVv0rcwUKMFd7xml36wAAAABJRU5ErkJggg=="
+
+def create_icon_from_base64(base64_string):
+    """Create a QIcon from Base64-encoded ICO data."""
+    base64_string += '=' * ((4 - len(base64_string) % 4) % 4)
+    icon_data = base64.b64decode(base64_string)
+
+    temp_icon_path = tempfile.mktemp(suffix='.ico')
+    with open(temp_icon_path, 'wb') as f:
+        f.write(icon_data)
+
+    return QIcon(temp_icon_path), temp_icon_path
+
+
+def set_windows_taskbar_icon(temp_icon_path, window_title, app_id="PDFsat.App.1.0"):
+    """Set the Windows taskbar icon from a file."""
+    if sys.platform.startswith('win'):
+        ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID(app_id)
+
+        hwnd = ctypes.windll.user32.FindWindowW(None, window_title)
+        if hwnd:
+            WM_SETICON = 0x80
+            ICON_BIG = 1
+            ICON_SMALL = 0
+            hicon = ctypes.windll.user32.LoadImageW(
+                None, temp_icon_path, 1, 0, 0, 0x10  # IMAGE_ICON=1, LR_LOADFROMFILE=0x10
+            )
+            ctypes.windll.user32.SendMessageW(hwnd, WM_SETICON, ICON_BIG, hicon)
+            ctypes.windll.user32.SendMessageW(hwnd, WM_SETICON, ICON_SMALL, hicon)
+
+
+def set_app_icon(app, window):
+    """Set application and taskbar icons properly."""
+    icon, temp_icon_path = create_icon_from_base64(icon_base64)
+    app.setWindowIcon(icon)
+    window.setWindowIcon(icon)
+
+    # Match the exact window title used in PresenterWindow
+    set_windows_taskbar_icon(temp_icon_path, "PDF Show and Tell - Presenter View")
+    return temp_icon_path
+
 
 
 class Config:
@@ -336,6 +391,9 @@ class PresenterWindow(QMainWindow):
         self._init_ui()
         self._load_last_session()
         
+        # Enable drag and drop
+        self.setAcceptDrops(True)
+        
         QTimer.singleShot(100, self._move_to_primary_screen)
     
     def _move_to_primary_screen(self):
@@ -551,6 +609,25 @@ class PresenterWindow(QMainWindow):
         QShortcut(QKeySequence(Qt.Key.Key_R), self, self.preview_remember)
         QShortcut(QKeySequence(Qt.Key.Key_G), self, self.preview_goto_remembered)
     
+    def dragEnterEvent(self, event):
+        """Handle drag enter event"""
+        if event.mimeData().hasUrls():
+            event.acceptProposedAction()
+    
+    def dropEvent(self, event):
+        """Handle drop event"""
+        if event.mimeData().hasUrls():
+            urls = event.mimeData().urls()
+            for url in urls:
+                file_path = url.toLocalFile()
+                if file_path.lower().endswith('.pdf'):
+                    # Load PDF file
+                    self._load_pdf(file_path)
+                elif file_path.lower().endswith('.txt'):
+                    # Load notes file
+                    self._load_notes(file_path)
+            event.acceptProposedAction()
+    
     def keyPressEvent(self, event):
         """Handle key press events"""
         if event.key() == Qt.Key.Key_Right or event.key() == Qt.Key.Key_Space:
@@ -666,8 +743,16 @@ class PresenterWindow(QMainWindow):
         )
         
         if filename:
-            self.notes_loader = NotesLoader(filename)
-            self.update_slides()
+            self._load_notes(filename)
+    
+    def _load_notes(self, notes_path):
+        """Load notes from a file path"""
+        if not self.slide_cache:
+            QMessageBox.warning(self, "Warning", "Please load a PDF first")
+            return
+        
+        self.notes_loader = NotesLoader(notes_path)
+        self.update_slides()
     
     def update_slides(self):
         """Update slide display"""
@@ -894,13 +979,53 @@ class PresenterWindow(QMainWindow):
 
 
 def main():
+    # Parse command line arguments
+    parser = argparse.ArgumentParser(description='PDF Show and Tell - Dual Screen Presentation Tool')
+    parser.add_argument('pdf_file', nargs='?', help='PDF file to open')
+    parser.add_argument('notes_file', nargs='?', help='Notes file to load (optional)')
+    args = parser.parse_args()
+    
+    # Initialize application
     app = QApplication(sys.argv)
     app.setApplicationName("PDF Show and Tell")
-    
+
+    # Create main window
     window = PresenterWindow()
+    window.setWindowTitle("PDF Show and Tell - Presenter View")  # must match FindWindowW()
+
+    # --- Set the icons (window + taskbar) ---
+    temp_icon_path = set_app_icon(app, window)
+
+    # --- Load command-line files, if any ---
+    if args.pdf_file:
+        pdf_path = Path(args.pdf_file)
+        if pdf_path.exists():
+            window._load_pdf(str(pdf_path), restore_slide=False)
+
+            if args.notes_file:
+                notes_path = Path(args.notes_file)
+                if notes_path.exists():
+                    window._load_notes(str(notes_path))
+                else:
+                    print(f"Warning: Notes file '{args.notes_file}' not found")
+        else:
+            print(f"Error: PDF file '{args.pdf_file}' not found")
+
+    # --- Show the main window ---
     window.show()
-    
-    sys.exit(app.exec())
+
+    # --- Run the app ---
+    exit_code = app.exec()
+
+    # --- Clean up temp icon file ---
+    if temp_icon_path and sys.platform.startswith('win'):
+        try:
+            os.unlink(temp_icon_path)
+        except:
+            pass
+
+    sys.exit(exit_code)
+
 
 
 if __name__ == '__main__':

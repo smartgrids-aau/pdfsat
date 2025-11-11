@@ -22,40 +22,14 @@ jobs:
         with:
           python-version: '3.12'
 
-      - name: Install UPX (Ubuntu)
-        if: matrix.os == 'ubuntu-latest'
-        run: |
-          wget https://github.com/upx/upx/releases/download/v4.2.1/upx-4.2.1-amd64_linux.tar.xz
-          tar -xvf upx-4.2.1-amd64_linux.tar.xz
-          sudo cp upx-4.2.1-amd64_linux/upx /usr/local/bin/
-          upx --version
-
-      - name: Install UPX (Windows)
-        if: matrix.os == 'windows-latest'
-        run: |
-          Invoke-WebRequest -Uri "https://github.com/upx/upx/releases/download/v4.2.1/upx-4.2.1-win64.zip" -OutFile "upx.zip"
-          Expand-Archive -Path "upx.zip" -DestinationPath "."
-          echo "$(Get-Location)\upx-4.2.1-win64" | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
-
-      - name: Install UPX (macOS)
-        if: matrix.os == 'macos-latest'
-        run: |
-          brew install upx
-
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
           pip install pyinstaller PyMuPDF PyQt6 screeninfo
 
-      - name: Build executable with UPX (Ubuntu/macOS)
-        if: matrix.os != 'windows-latest'
+      - name: Build executable
         run: |
-          pyinstaller --onefile --noconsole --upx-dir /usr/local/bin pdfsat.py
-
-      - name: Build executable with UPX (Windows)
-        if: matrix.os == 'windows-latest'
-        run: |
-          pyinstaller --onefile --noconsole --upx-dir "$(Get-Location)\upx-4.2.1-win64" pdfsat.py
+          pyinstaller --onefile --noconsole pdfsat.py
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
