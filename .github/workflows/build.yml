@@ -3,13 +3,14 @@ name: Build PDFSAT
 on:
   push:
     tags:
-      - 'v*'    # build when a new tag is pushed (like v1.0.0)
-  workflow_dispatch:  # allows manual triggering
+      - 'v*'            # build when a new tag is pushed (like v1.0.0)
+  workflow_dispatch:     # allows manual triggering
 
 jobs:
   build:
     runs-on: ${{ matrix.os }}
     strategy:
+      fail-fast: false   # one failing platform must not cancel the others
       matrix:
         os: [windows-latest, ubuntu-latest, macos-latest]
 
@@ -28,34 +29,62 @@ jobs:
           pip install pyinstaller PyMuPDF PyQt6 screeninfo
 
       - name: Build executable
+        run: pyinstaller --onefile --noconsole pdfsat.py
+
+      # Give every platform a unique file name, otherwise the three
+      # builds overwrite each other in the release.
+      - name: Package (Windows)
+        if: runner.os == 'Windows'
+        shell: bash
         run: |
-          pyinstaller --onefile --noconsole pdfsat.py
+          mkdir out
+          cp dist/pdfsat.exe out/pdfsat.exe
+
+      - name: Package (Linux)
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          mkdir out
+          chmod +x dist/pdfsat
+          tar -czf out/pdfsat-linux.tar.gz -C dist pdfsat
+
+      - name: Package (macOS)
+        if: runner.os == 'macOS'
+        shell: bash
+        run: |
+          mkdir out
+          if [ -d dist/pdfsat.app ]; then
+            ditto -c -k --keepParent dist/pdfsat.app out/pdfsat-macos.zip
+          else
+            chmod +x dist/pdfsat
+            tar -czf out/pdfsat-macos.tar.gz -C dist pdfsat
+          fi
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
           name: pdfsat-${{ matrix.os }}
-          path: dist/pdfsat*
+          path: out/*
 
   release:
-        needs: build
-        runs-on: ubuntu-latest
-        if: startsWith(github.ref, 'refs/tags/')
-        steps:
-          - name: Download build artifacts
-            uses: actions/download-artifact@v4
-            with:
-              path: ./artifacts
-      
-          - name: Prepare release files
-            run: |
-              mkdir -p ./release
-              find ./artifacts -type f -exec cp {} ./release/ \;
-              ls -la ./release/
-          
-          - name: Create GitHub Release
-            uses: softprops/action-gh-release@v2
-            with:
-              files: ./release/*
-            env:
-              GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+    needs: build
+    runs-on: ubuntu-latest
+    if: startsWith(github.ref, 'refs/tags/')
+    permissions:
+      contents: write    # needed to create the release
+    steps:
+      - name: Download build artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: ./release
+          merge-multiple: true
+
+      - name: List release files
+        run: ls -la ./release/
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: ./release/*
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
