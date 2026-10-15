@@ -12,7 +12,7 @@ Features:
 - Screen blanking
 
 Wilfried Elmenreich
-Version 0.3, November 2025
+Version 0.36, October 2026
 Released under the WTFPL (Do What The Fuck You Want To Public License)
 """
 
